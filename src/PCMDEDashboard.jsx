@@ -518,7 +518,7 @@ function collectIds(nodes) {
   return ids;
 }
 
-function SummaryCard({ label, value, icon: Icon, tone = "blue" }) {
+function SummaryCard({ label, value, icon: Icon, tone = "blue", active = false, onClick }) {
   const toneClass = {
     blue: "bg-blue-50 text-blue-700 ring-blue-100",
     green: "bg-emerald-50 text-emerald-700 ring-emerald-100",
@@ -527,8 +527,17 @@ function SummaryCard({ label, value, icon: Icon, tone = "blue" }) {
     slate: "bg-slate-50 text-slate-700 ring-slate-100",
   }[tone];
 
+  const activeClass = active
+    ? "ring-2 ring-blue-400 border-blue-300 shadow-md"
+    : "border-slate-200 shadow-sm hover:shadow-md";
+
   return (
-    <div className="rounded-2xl bg-white p-4 shadow-sm border border-slate-200 flex items-center justify-between">
+    <button
+      type="button"
+      onClick={onClick}
+      className={`rounded-2xl bg-white p-4 border flex items-center justify-between text-left transition ${activeClass} ${onClick ? "cursor-pointer hover:-translate-y-0.5" : "cursor-default"}`}
+      title={onClick ? `Show ${label.toLowerCase()}` : undefined}
+    >
       <div>
         <div className="text-xs font-medium text-slate-500">{label}</div>
         <div className="text-3xl font-bold text-slate-950 mt-1">{value}</div>
@@ -538,7 +547,7 @@ function SummaryCard({ label, value, icon: Icon, tone = "blue" }) {
           <Icon size={22} />
         </div>
       )}
-    </div>
+    </button>
   );
 }
 
@@ -549,6 +558,7 @@ export default function PCMDEDashboard() {
   const [level, setLevel] = useState("activities");
   const [statusFilter, setStatusFilter] = useState("all");
   const [dependencyFilter, setDependencyFilter] = useState("all");
+  const [quickFilter, setQuickFilter] = useState("all");
   const [timeScale, setTimeScale] = useState("month");
   const [expanded, setExpanded] = useState({});
   const [parseError, setParseError] = useState("");
@@ -557,6 +567,34 @@ export default function PCMDEDashboard() {
   const tree = useMemo(() => buildTree(issues), [issues]);
 
   const maxDepth = { programme: 0, initiatives: 1, epics: 2, activities: 3, detailed: 4 }[level];
+
+  const quickFilterLabels = {
+    all: "All items",
+    open: "Open items",
+    progress: "In progress",
+    done: "Done",
+    overdue: "Overdue",
+    blocked: "Blocked",
+    blocking: "Blocking others",
+  };
+
+  function isDoneStatus(status) {
+    const s = String(status || "").toLowerCase();
+    return s.includes("done") || s.includes("closed") || s.includes("complete") || s.includes("cancelled");
+  }
+
+  function matchesQuickFilter(node) {
+    const now = new Date();
+
+    if (quickFilter === "open") return !isDoneStatus(node.status);
+    if (quickFilter === "progress") return String(node.status || "").toLowerCase().includes("progress");
+    if (quickFilter === "done") return isDoneStatus(node.status);
+    if (quickFilter === "overdue") return node.due && node.due < now && !isDoneStatus(node.status);
+    if (quickFilter === "blocked") return !!node.isBlocked;
+    if (quickFilter === "blocking") return !!node.isBlocking;
+
+    return true;
+  }
 
   const statusValues = useMemo(() => {
     const values = new Set(issues.map((i) => i.status).filter(Boolean));
@@ -581,6 +619,10 @@ export default function PCMDEDashboard() {
       return true;
     }
 
+    function childMatchesQuickFilter(node) {
+      return matchesQuickFilter(node) || node.children?.some(childMatchesQuickFilter);
+    }
+
     function childMatchesStatus(node) {
       return node.status === statusFilter || node.children?.some(childMatchesStatus);
     }
@@ -589,7 +631,8 @@ export default function PCMDEDashboard() {
       const queryOk = !q || nodeText(node).includes(q);
       const statusOk = statusFilter === "all" || node.status === statusFilter || node.children?.some(childMatchesStatus);
       const dependencyOk = dependencyFilter === "all" || childMatchesDependency(node);
-      return queryOk && statusOk && dependencyOk;
+      const quickOk = quickFilter === "all" || matchesQuickFilter(node) || node.children?.some(childMatchesQuickFilter);
+      return queryOk && statusOk && dependencyOk && quickOk;
     }
 
     function filterNode(node) {
@@ -619,7 +662,7 @@ export default function PCMDEDashboard() {
         if (!q) return 0;
         return (b._searchScore || 0) - (a._searchScore || 0);
       });
-  }, [tree, query, statusFilter, dependencyFilter]);
+  }, [tree, query, statusFilter, dependencyFilter, quickFilter]);
 
   useEffect(() => {
     const q = query.trim();
@@ -671,14 +714,14 @@ export default function PCMDEDashboard() {
 
   const stats = useMemo(() => {
     const now = new Date();
-    const done = issues.filter((i) => ["done", "closed"].some((s) => String(i.status).toLowerCase().includes(s))).length;
+    const done = issues.filter((i) => isDoneStatus(i.status)).length;
     const open = issues.length - done;
 
     return {
       issues: issues.length,
       open,
       done,
-      overdue: issues.filter((i) => i.due && i.due < now && !String(i.status).toLowerCase().includes("done") && !String(i.status).toLowerCase().includes("closed")).length,
+      overdue: issues.filter((i) => i.due && i.due < now && !isDoneStatus(i.status)).length,
       inProgress: issues.filter((i) => String(i.status).toLowerCase().includes("progress")).length,
       blocked: issues.filter((i) => i.isBlocked).length,
       blocking: issues.filter((i) => i.isBlocking).length,
@@ -726,13 +769,13 @@ export default function PCMDEDashboard() {
   }
 
   function todayLineStyle() {
-    const now = new Date();
-    const position = ((now - timeline.start) / 86400000 / totalDays) * 100;
+  const now = new Date();
+  const position = ((now - timeline.start) / 86400000 / totalDays) * 100;
 
-    return {
-      left: `${clamp(position, 0, 100)}%`,
-    };
-  }
+  return {
+    left: `${clamp(position, 0, 100)}%`,
+  };
+}
 
   const today = new Date();
 
@@ -751,13 +794,13 @@ export default function PCMDEDashboard() {
           </label>
         </header>
 
-        <section className="grid grid-cols-2 xl:grid-cols-4 gap-4">
-          <SummaryCard label="Open items" value={stats.open} icon={ListTree} tone="blue" />
-          <SummaryCard label="In progress" value={stats.inProgress} icon={Clock3} tone="blue" />
-          <SummaryCard label="Done" value={stats.done} icon={CheckCircle2} tone="green" />
-          <SummaryCard label="Overdue" value={stats.overdue} icon={AlertTriangle} tone="red" />
-          <SummaryCard label="Blocked" value={stats.blocked} icon={AlertTriangle} tone="red" />
-          <SummaryCard label="Blocking others" value={stats.blocking} icon={CircleDot} tone="amber" />
+        <section className="grid grid-cols-2 xl:grid-cols-6 gap-4">
+          <SummaryCard label="Open items" value={stats.open} icon={ListTree} tone="blue" active={quickFilter === "open"} onClick={() => setQuickFilter(quickFilter === "open" ? "all" : "open")} />
+          <SummaryCard label="In progress" value={stats.inProgress} icon={Clock3} tone="blue" active={quickFilter === "progress"} onClick={() => setQuickFilter(quickFilter === "progress" ? "all" : "progress")} />
+          <SummaryCard label="Done" value={stats.done} icon={CheckCircle2} tone="green" active={quickFilter === "done"} onClick={() => setQuickFilter(quickFilter === "done" ? "all" : "done")} />
+          <SummaryCard label="Overdue" value={stats.overdue} icon={AlertTriangle} tone="red" active={quickFilter === "overdue"} onClick={() => setQuickFilter(quickFilter === "overdue" ? "all" : "overdue")} />
+          <SummaryCard label="Blocked" value={stats.blocked} icon={AlertTriangle} tone="red" active={quickFilter === "blocked"} onClick={() => setQuickFilter(quickFilter === "blocked" ? "all" : "blocked")} />
+          <SummaryCard label="Blocking others" value={stats.blocking} icon={CircleDot} tone="amber" active={quickFilter === "blocking"} onClick={() => setQuickFilter(quickFilter === "blocking" ? "all" : "blocking")} />
         </section>
 
         <section className="rounded-2xl bg-white shadow-sm border border-slate-200 p-4 space-y-4">
@@ -766,6 +809,16 @@ export default function PCMDEDashboard() {
               <div className="text-sm font-medium text-slate-500">{fileName ? `Loaded: ${fileName}` : "No file loaded yet"}</div>
               <div className="text-sm text-slate-400">{stats.issues} Jira rows loaded</div>
               {parseError && <div className="text-sm text-red-600">CSV warning: {parseError}</div>}
+              {quickFilter !== "all" && (
+                <button
+                  type="button"
+                  onClick={() => setQuickFilter("all")}
+                  className="inline-flex items-center gap-2 rounded-full bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-200 hover:bg-blue-100"
+                  title="Clear quick filter"
+                >
+                  Showing: {quickFilterLabels[quickFilter]} <span className="text-blue-500">×</span>
+                </button>
+              )}
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -786,17 +839,12 @@ export default function PCMDEDashboard() {
                 />
               </div>
 
-              <select
-                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm bg-slate-50"
-                  value={level}
-                  onChange={(e) => setLevel(e.target.value)}
-                >
-                  <option value="programme">Programme view</option>
-                  <option value="initiatives">Initiative view</option>
-                  <option value="epics">Epic view</option>
-                  <option value="activities">Activity view</option>
-                  <option value="detailed">Detailed view incl. sub-tasks</option>
-                </select>
+              <select className="rounded-xl border border-slate-300 px-3 py-2 text-sm bg-slate-50" value={level} onChange={(e) => setLevel(e.target.value)}>
+                <option value="programme">Programme view</option>
+                <option value="initiatives">Initiative view</option>
+                <option value="activities">Activity view</option>
+                <option value="detailed">Detailed view incl. sub-tasks</option>
+              </select>
 
               <select className="rounded-xl border border-slate-300 px-3 py-2 text-sm bg-slate-50" value={timeScale} onChange={(e) => setTimeScale(e.target.value)}>
                 <option value="week">Week view</option>
@@ -914,23 +962,23 @@ export default function PCMDEDashboard() {
                     </div>
 
                     <div className="relative grid" style={{ gridTemplateColumns: `repeat(${timeline.months.length}, minmax(120px, 1fr))` }}>
-                          {timeline.months.map((m) => {
-                            const isCurrent = m.getMonth() === today.getMonth() && m.getFullYear() === today.getFullYear();
-                            return <div key={m.toISOString()} className={`border-l ${isCurrent ? "bg-blue-50/40 border-blue-100" : "border-slate-100"}`} />;
-                          })}
+                      {timeline.months.map((m) => {
+                        const isCurrent = m.getMonth() === today.getMonth() && m.getFullYear() === today.getFullYear();
+                        return <div key={m.toISOString()} className={`border-l ${isCurrent ? "bg-blue-50/40 border-blue-100" : "border-slate-100"}`} />;
+                      })}
 
-                          <div className="absolute top-0 bottom-0 z-20 pointer-events-none" style={todayLineStyle()}>
-                            <div className="relative h-full">
-                              <div className="absolute top-0 bottom-0 left-0 w-[2px] bg-red-500 opacity-80 shadow-sm" />
-                            </div>
-                          </div>
+                    <div className="absolute top-0 bottom-0 z-20 pointer-events-none" style={todayLineStyle()}>
+                     <div className="relative h-full">
+                        <div className="absolute top-0 bottom-0 left-0 w-[2px] bg-red-500 opacity-80 shadow-sm" />
+                     </div>
+                    </div>
 
-                          <div
-                            className={`absolute top-1/2 -translate-y-1/2 rounded-full shadow-sm ${barClass(row)}`}
-                            style={barStyle(row)}
-                            title={`${title}: ${formatDate(row.start)} → ${formatDate(row.due)}`}
-                          />
-                        </div>
+                      <div
+                        className={`absolute top-1/2 -translate-y-1/2 rounded-full shadow-sm ${barClass(row)}`}
+                        style={barStyle(row)}
+                        title={`${title}: ${formatDate(row.start)} → ${formatDate(row.due)}`}
+                      />
+                    </div>
                   </div>
                 );
               })}

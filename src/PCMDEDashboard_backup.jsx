@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Papa from "papaparse";
 import {
   Upload,
@@ -24,8 +24,8 @@ import {
 // No CSV manipulation required.
 
 const JIRA_BASE_URL = "https://compass-group-team-mnjkym0e.atlassian.net/browse/";
-const LEFT_GRID = "620px 1fr";
-const LEFT_COLUMNS = "1fr 150px 125px";
+const LEFT_GRID = "820px 1fr";
+const LEFT_COLUMNS = "1fr 190px 130px";
 const STATUS_ORDER = ["To-Do", "In Progress", "Blocked", "At Risk", "Done", "Closed"];
 
 function normaliseKey(name) {
@@ -75,6 +75,17 @@ function monthLabel(date) {
   return date.toLocaleDateString(undefined, { month: "short", year: "numeric" });
 }
 
+function weekLabel(date) {
+  const d = new Date(date);
+  const start = new Date(d);
+  start.setDate(d.getDate() - d.getDay() + 1);
+  return `W${Math.ceil((((start - new Date(start.getFullYear(),0,1)) / 86400000) + 1) / 7)} ${start.getFullYear()}`;
+}
+
+function quarterLabel(date) {
+  return `Q${Math.floor(date.getMonth() / 3) + 1} ${date.getFullYear()}`;
+}
+
 function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
 }
@@ -114,7 +125,7 @@ function badgeClass(status) {
 
 function rowTextClass(row) {
   if (row.kind === "project") return "font-bold text-slate-950";
-  if (row.kind === "initiative") return "font-semibold text-slate-900";
+  if (row.kind === "initiative" || row.kind === "epic") return "font-bold text-slate-950";
   if (row.kind === "subtask") return "text-slate-600";
   return "text-slate-800";
 }
@@ -122,59 +133,142 @@ function rowTextClass(row) {
 function nodeIcon(row) {
   const type = String(row.issueType || "").toLowerCase();
 
+  // Jira-like hierarchy colours
   if (row.kind === "project") {
     return (
-      <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-slate-900 text-[11px] font-bold text-white" title="Programme / Project">
+      <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-slate-900 text-[11px] font-bold text-white shadow-sm" title="Programme / Project">
         P
       </span>
     );
   }
 
-  if (row.kind === "initiative") {
-    return <Layers3 size={17} className="shrink-0 text-orange-600" aria-label="Initiative / Epic" />;
+  // Initiative → green Jira-style I
+  if (type.includes("initiative") || row.kind === "initiative") {
+    return (
+      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded bg-emerald-600 text-[11px] font-bold text-white shadow-sm" title="Initiative">
+        I
+      </span>
+    );
   }
 
+  // Epic → purple Jira-style E
+  if (type.includes("epic") || row.kind === "epic") {
+    return (
+      <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded bg-violet-600 text-[11px] font-bold text-white shadow-sm" title="Epic">
+        E
+      </span>
+    );
+  }
+
+  // Subtask → light blue
   if (row.kind === "subtask" || type.includes("sub-task")) {
-    return <ListChecks size={16} className="shrink-0 text-slate-500" aria-label="Sub-task" />;
+    return (
+      <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded border border-sky-300 bg-sky-100 text-[9px] font-bold text-sky-700" title="Sub-task">
+        ↳
+      </span>
+    );
   }
 
+  // Risks / issues → red warning
   if (type.includes("risk") || type.includes("issue")) {
     return <AlertTriangle size={16} className="shrink-0 text-red-500" aria-label="Risk / Issue" />;
   }
 
-  if (type.includes("epic") || type.includes("initiative")) {
-    return <FolderKanban size={16} className="shrink-0 text-orange-600" aria-label="Epic" />;
-  }
+  // Actions / Activities → Jira red tone
+  return (
+    <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border border-rose-300 bg-rose-100 text-[10px] font-bold text-rose-700 shadow-sm" title="Activity / Action">
+      A
+    </span>
+  );
+}
 
-  if (type.includes("action") || type.includes("task") || type.includes("activity")) {
-    return <SquareCheckBig size={16} className="shrink-0 text-blue-600" aria-label="Action / Activity" />;
-  }
-
-  return <CircleDot size={14} className="shrink-0 text-slate-400" aria-label="Item" />;
+function countByKind(row, kind) {
+  return (row.children || []).reduce(
+    (sum, child) => sum + (child.kind === kind ? 1 : 0) + countByKind(child, kind),
+    0
+  );
 }
 
 function countLabel(row) {
   if (!row.children?.length) return "";
 
   if (row.kind === "project") {
-    const initiatives = row.children.length;
-    return `${initiatives} initiative${initiatives === 1 ? "" : "s"}`;
+    const initiatives = countByKind(row, "initiative");
+    const epics = countByKind(row, "epic");
+    const actions = countByKind(row, "activity");
+    const parts = [];
+    if (initiatives) parts.push(`${initiatives} initiative${initiatives === 1 ? "" : "s"}`);
+    if (!initiatives && epics) parts.push(`${epics} epic${epics === 1 ? "" : "s"}`);
+    if (!initiatives && !epics && actions) parts.push(`${actions} action${actions === 1 ? "" : "s"}`);
+    return parts.join(" + ") || `${row.children.length} item${row.children.length === 1 ? "" : "s"}`;
   }
 
   if (row.kind === "initiative") {
-    const activities = row.activityCount || row.children.length;
+    const epics = row.children.filter((child) => child.kind === "epic").length;
+    const activities = row.activityCount || 0;
+    const subtasks = row.subtaskCount || 0;
+    const parts = [];
+    if (epics) parts.push(`${epics} epic${epics === 1 ? "" : "s"}`);
+    if (activities) parts.push(`${activities} action${activities === 1 ? "" : "s"}`);
+    if (subtasks) parts.push(`${subtasks} subtask${subtasks === 1 ? "" : "s"}`);
+    return parts.join(" + ") || `${row.children.length} item${row.children.length === 1 ? "" : "s"}`;
+  }
+
+  if (row.kind === "epic") {
+    const activities = row.activityCount || row.children.filter((child) => child.kind === "activity").length;
     const subtasks = row.subtaskCount || 0;
     return subtasks > 0
-      ? `${activities} activit${activities === 1 ? "y" : "ies"} · ${subtasks} sub-task${subtasks === 1 ? "" : "s"}`
-      : `${activities} activit${activities === 1 ? "y" : "ies"}`;
+      ? `${activities} action${activities === 1 ? "" : "s"} + ${subtasks} subtask${subtasks === 1 ? "" : "s"}`
+      : `${activities} action${activities === 1 ? "" : "s"}`;
   }
 
   if (row.kind === "activity") {
     const subtasks = row.subtaskCount || row.children.length;
-    return `${subtasks} sub-task${subtasks === 1 ? "" : "s"}`;
+    return `${subtasks} subtask${subtasks === 1 ? "" : "s"}`;
   }
 
   return `${row.children.length} item${row.children.length === 1 ? "" : "s"}`;
+}
+
+function searchScore(node, query) {
+  const q = query.trim().toLowerCase();
+  if (!q) return 0;
+
+  const key = String(node.key || "").toLowerCase();
+  const title = String(node.title || node.summary || "").toLowerCase();
+  const owner = String(node.assignee || "").toLowerCase();
+  const status = String(node.status || "").toLowerCase();
+  const meta = `${node.workstream || ""} ${node.l3Process || ""} ${node.phase || ""}`.toLowerCase();
+
+  if (key === q) return 1000;
+  if (key.startsWith(q)) return 800;
+  if (title.startsWith(q)) return 650;
+  if (title.includes(q)) return 500;
+  if (owner.includes(q)) return 300;
+  if (status.includes(q)) return 200;
+  if (meta.includes(q)) return 100;
+  return 0;
+}
+
+function maxSearchScore(node, query) {
+  const own = searchScore(node, query);
+  const childScores = (node.children || []).map((child) => maxSearchScore(child, query));
+  return Math.max(own, 0, ...childScores);
+}
+
+function collectExpandedIdsForSearch(nodes, query) {
+  const ids = [];
+  const q = query.trim();
+  if (!q) return ids;
+
+  function walk(node) {
+    const childHasMatch = (node.children || []).some((child) => maxSearchScore(child, q) > 0);
+    if (childHasMatch) ids.push(node.id);
+    node.children?.forEach(walk);
+  }
+
+  nodes.forEach(walk);
+  return ids;
 }
 
 function CountPill({ row }) {
@@ -182,10 +276,25 @@ function CountPill({ row }) {
   if (!label) return null;
 
   return (
-    <span className="ml-2 shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200" title="Contained Jira items">
+    <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600 ring-1 ring-slate-200" title="Contained Jira items">
       {label}
     </span>
   );
+}
+
+function extractJiraLinks(row, label) {
+  return Object.entries(row)
+    .filter(([key, value]) => {
+      const header = String(key || "").toLowerCase();
+      const cell = String(value || "").trim();
+      return header.includes(label.toLowerCase()) && cell && cell.toLowerCase() !== "(blank)";
+    })
+    .flatMap(([, value]) =>
+      String(value)
+        .split(/[;,]/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    );
 }
 
 function normaliseIssue(row) {
@@ -201,6 +310,9 @@ function normaliseIssue(row) {
   const workstream = pick(row, ["Custom field (Workstream)", "Workstream"]);
   const l3Process = pick(row, ["Custom field (L3-Process)", "L3-Process", "L3 Process"]);
   const phase = pick(row, ["Custom field (Project Phase)", "Project Phase"]);
+
+  const blockedBy = extractJiraLinks(row, "Inward issue link (Blocks)");
+  const blocking = extractJiraLinks(row, "Outward issue link (Blocks)");
 
   const plannedStartRaw = pick(row, [
     "Custom field (Planned Start Date)",
@@ -239,6 +351,10 @@ function normaliseIssue(row) {
     start: fallbackStart,
     due: fallbackDue,
     updated,
+    blockedBy,
+    blocking,
+    isBlocked: blockedBy.length > 0,
+    isBlocking: blocking.length > 0,
     raw: row,
   };
 }
@@ -252,6 +368,16 @@ function addDays(date, days) {
 function buildTree(issues) {
   const projectMap = new Map();
   const issueMap = new Map();
+  const attached = new Set();
+
+  function classifyKind(issueType) {
+    const type = String(issueType || "").toLowerCase();
+    if (type.includes("sub-task")) return "subtask";
+    if (type.includes("project")) return "projectIssue";
+    if (type.includes("initiative")) return "initiative";
+    if (type.includes("epic")) return "epic";
+    return "activity";
+  }
 
   issues.forEach((issue) => {
     if (!issue.key) return;
@@ -260,7 +386,7 @@ function buildTree(issues) {
       ...issue,
       id: `issue:${issue.key}`,
       title: issue.summary || issue.key,
-      kind: issue.issueType?.toLowerCase().includes("sub-task") ? "subtask" : "activity",
+      kind: classifyKind(issue.issueType),
       children: [],
     });
   });
@@ -286,56 +412,55 @@ function buildTree(issues) {
     return projectMap.get(projectId);
   }
 
-  const initiativeMap = new Map();
-
-  function getInitiative(project, name, key = "") {
-    const safeName = name || "PCM Germany Core Activities";
-    const mapKey = `${project.title}::${safeName}`;
-
-    if (!initiativeMap.has(mapKey)) {
-      const node = {
-        id: `initiative:${mapKey}`,
-        title: safeName,
-        key,
-        kind: "initiative",
-        level: 1,
-        status: "",
-        assignee: "",
-        start: null,
-        due: null,
-        children: [],
-      };
-
-      initiativeMap.set(mapKey, node);
-      project.children.push(node);
-    }
-
-    return initiativeMap.get(mapKey);
-  }
-
+  // True Jira hierarchy: Initiative -> Epic -> Action -> Sub-task.
+  // Only trust PCMDE parent links so external FUP/S4 links do not hijack the tree.
   issueMap.forEach((node) => {
-    const project = getProject(node.project);
     const parentIsPCMDE = node.parentKey && node.parentKey.startsWith("PCMDE-");
     const parentExists = parentIsPCMDE && issueMap.has(node.parentKey);
 
-    if (node.kind === "subtask" && parentExists) {
+    if (parentExists && node.parentKey !== node.key) {
       const parent = issueMap.get(node.parentKey);
       parent.children.push(node);
-      node.level = 3;
-      return;
+      attached.add(node.key);
     }
-
-    if (parentExists) {
-      const initiative = getInitiative(project, node.parentSummary || "Grouped PCMDE Activities", node.parentKey);
-      initiative.children.push(node);
-      node.level = 2;
-      return;
-    }
-
-    const initiative = getInitiative(project, "PCM Germany Core Activities");
-    initiative.children.push(node);
-    node.level = 2;
   });
+
+  // Anything without a valid exported PCMDE parent becomes a top-level child of the project.
+  // Special case: PCMDE-1 is Jira's programme/project issue. Do not render it as a separate child;
+  // promote its children to the artificial programme root so the dashboard root matches Jira Board.
+  issueMap.forEach((node) => {
+    const project = getProject(node.project);
+
+    if (node.kind === "projectIssue" || node.key === "PCMDE-1") {
+      project.key = node.key || project.key;
+      project.title = node.summary || project.title;
+      project.status = node.status || project.status;
+      project.assignee = node.assignee || project.assignee;
+      project.start = node.start || project.start;
+      project.due = node.due || project.due;
+
+      node.children.forEach((child) => {
+        project.children.push(child);
+        attached.add(child.key);
+      });
+
+      attached.add(node.key);
+      return;
+    }
+
+    if (attached.has(node.key)) return;
+    project.children.push(node);
+  });
+
+  function sortTree(node) {
+    node.children.sort((a, b) => {
+      const order = { initiative: 1, epic: 2, activity: 3, subtask: 4, projectIssue: 99 };
+      const kindDiff = (order[a.kind] || 9) - (order[b.kind] || 9);
+      if (kindDiff !== 0) return kindDiff;
+      return String(a.key || a.title).localeCompare(String(b.key || b.title), undefined, { numeric: true });
+    });
+    node.children.forEach(sortTree);
+  }
 
   function rollup(node) {
     node.children.forEach(rollup);
@@ -365,6 +490,7 @@ function buildTree(issues) {
   }
 
   const roots = [...projectMap.values()];
+  roots.forEach(sortTree);
   roots.forEach(rollup);
   return roots;
 }
@@ -422,13 +548,15 @@ export default function PCMDEDashboard() {
   const [query, setQuery] = useState("");
   const [level, setLevel] = useState("activities");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [dependencyFilter, setDependencyFilter] = useState("all");
+  const [timeScale, setTimeScale] = useState("month");
   const [expanded, setExpanded] = useState({});
   const [parseError, setParseError] = useState("");
 
   const issues = useMemo(() => rows.map(normaliseIssue).filter((i) => i.key || i.summary), [rows]);
   const tree = useMemo(() => buildTree(issues), [issues]);
 
-  const maxDepth = { programme: 0, initiatives: 1, activities: 2, detailed: 3 }[level];
+  const maxDepth = { programme: 0, initiatives: 1, epics: 2, activities: 3, detailed: 4 }[level];
 
   const statusValues = useMemo(() => {
     const values = new Set(issues.map((i) => i.status).filter(Boolean));
@@ -443,7 +571,14 @@ export default function PCMDEDashboard() {
     const q = query.trim().toLowerCase();
 
     function nodeText(node) {
-      return `${node.title || node.summary || ""} ${node.key || ""} ${node.status || ""} ${node.assignee || ""} ${node.workstream || ""} ${node.l3Process || ""}`.toLowerCase();
+      return `${node.title || node.summary || ""} ${node.key || ""} ${node.status || ""} ${node.assignee || ""} ${node.workstream || ""} ${node.l3Process || ""} ${(node.blockedBy || []).join(" ")} ${(node.blocking || []).join(" ")}`.toLowerCase();
+    }
+
+    function childMatchesDependency(node) {
+      if (dependencyFilter === "blocked") return node.isBlocked || node.children?.some(childMatchesDependency);
+      if (dependencyFilter === "blocking") return node.isBlocking || node.children?.some(childMatchesDependency);
+      if (dependencyFilter === "any") return node.isBlocked || node.isBlocking || node.children?.some(childMatchesDependency);
+      return true;
     }
 
     function childMatchesStatus(node) {
@@ -453,17 +588,52 @@ export default function PCMDEDashboard() {
     function matches(node) {
       const queryOk = !q || nodeText(node).includes(q);
       const statusOk = statusFilter === "all" || node.status === statusFilter || node.children?.some(childMatchesStatus);
-      return queryOk && statusOk;
+      const dependencyOk = dependencyFilter === "all" || childMatchesDependency(node);
+      return queryOk && statusOk && dependencyOk;
     }
 
     function filterNode(node) {
-      const children = (node.children || []).map(filterNode).filter(Boolean);
-      if (matches(node) || children.length) return { ...node, children };
+      const children = (node.children || [])
+        .map(filterNode)
+        .filter(Boolean)
+        .sort((a, b) => {
+          if (!q) return 0;
+          return maxSearchScore(b, q) - maxSearchScore(a, q);
+        });
+
+      if (matches(node) || children.length) {
+        return {
+          ...node,
+          children,
+          _searchScore: maxSearchScore({ ...node, children }, q),
+        };
+      }
+
       return null;
     }
 
-    return tree.map(filterNode).filter(Boolean);
-  }, [tree, query, statusFilter]);
+    return tree
+      .map(filterNode)
+      .filter(Boolean)
+      .sort((a, b) => {
+        if (!q) return 0;
+        return (b._searchScore || 0) - (a._searchScore || 0);
+      });
+  }, [tree, query, statusFilter, dependencyFilter]);
+
+  useEffect(() => {
+    const q = query.trim();
+
+    if (q) {
+      const ids = collectExpandedIdsForSearch(filteredTree, q);
+      setExpanded((prev) => ({ ...prev, ...Object.fromEntries(ids.map((id) => [id, true])) }));
+      return;
+    }
+
+    if (level === "detailed") {
+      setExpanded({});
+    }
+  }, [query, level, filteredTree]);
 
   const flatRows = useMemo(() => flatten(filteredTree, expanded, maxDepth), [filteredTree, expanded, maxDepth]);
 
@@ -471,16 +641,31 @@ export default function PCMDEDashboard() {
     const dates = flatRows.flatMap((r) => [r.start, r.due]).filter(Boolean);
     const min = dates.length ? monthStart(new Date(Math.min(...dates.map((d) => d.getTime())))) : monthStart(new Date());
     const max = dates.length ? monthStart(new Date(Math.max(...dates.map((d) => d.getTime())))) : addMonths(min, 6);
-    const months = [];
-    let current = min;
 
-    while (current <= addMonths(max, 1)) {
-      months.push(current);
-      current = addMonths(current, 1);
+    const periods = [];
+
+    if (timeScale === "week") {
+      let current = new Date(min);
+      while (current <= addMonths(max, 1)) {
+        periods.push(new Date(current));
+        current.setDate(current.getDate() + 7);
+      }
+    } else if (timeScale === "quarter") {
+      let current = new Date(min.getFullYear(), Math.floor(min.getMonth() / 3) * 3, 1);
+      while (current <= addMonths(max, 1)) {
+        periods.push(new Date(current));
+        current = addMonths(current, 3);
+      }
+    } else {
+      let current = min;
+      while (current <= addMonths(max, 1)) {
+        periods.push(current);
+        current = addMonths(current, 1);
+      }
     }
 
-    return { start: min, end: addMonths(max, 1), months };
-  }, [flatRows]);
+    return { start: min, end: addMonths(max, 1), months: periods };
+  }, [flatRows, timeScale]);
 
   const totalDays = Math.max(1, (timeline.end - timeline.start) / 86400000);
 
@@ -495,6 +680,8 @@ export default function PCMDEDashboard() {
       done,
       overdue: issues.filter((i) => i.due && i.due < now && !String(i.status).toLowerCase().includes("done") && !String(i.status).toLowerCase().includes("closed")).length,
       inProgress: issues.filter((i) => String(i.status).toLowerCase().includes("progress")).length,
+      blocked: issues.filter((i) => i.isBlocked).length,
+      blocking: issues.filter((i) => i.isBlocking).length,
     };
   }, [issues]);
 
@@ -538,6 +725,15 @@ export default function PCMDEDashboard() {
     return { left: `${left}%`, width: `${width}%` };
   }
 
+  function todayLineStyle() {
+    const now = new Date();
+    const position = ((now - timeline.start) / 86400000 / totalDays) * 100;
+
+    return {
+      left: `${clamp(position, 0, 100)}%`,
+    };
+  }
+
   const today = new Date();
 
   return (
@@ -560,6 +756,8 @@ export default function PCMDEDashboard() {
           <SummaryCard label="In progress" value={stats.inProgress} icon={Clock3} tone="blue" />
           <SummaryCard label="Done" value={stats.done} icon={CheckCircle2} tone="green" />
           <SummaryCard label="Overdue" value={stats.overdue} icon={AlertTriangle} tone="red" />
+          <SummaryCard label="Blocked" value={stats.blocked} icon={AlertTriangle} tone="red" />
+          <SummaryCard label="Blocking others" value={stats.blocking} icon={CircleDot} tone="amber" />
         </section>
 
         <section className="rounded-2xl bg-white shadow-sm border border-slate-200 p-4 space-y-4">
@@ -588,11 +786,29 @@ export default function PCMDEDashboard() {
                 />
               </div>
 
-              <select className="rounded-xl border border-slate-300 px-3 py-2 text-sm bg-slate-50" value={level} onChange={(e) => setLevel(e.target.value)}>
-                <option value="programme">Programme view</option>
-                <option value="initiatives">Initiative view</option>
-                <option value="activities">Activity view</option>
-                <option value="detailed">Detailed view incl. sub-tasks</option>
+              <select
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm bg-slate-50"
+                  value={level}
+                  onChange={(e) => setLevel(e.target.value)}
+                >
+                  <option value="programme">Programme view</option>
+                  <option value="initiatives">Initiative view</option>
+                  <option value="epics">Epic view</option>
+                  <option value="activities">Activity view</option>
+                  <option value="detailed">Detailed view incl. sub-tasks</option>
+                </select>
+
+              <select className="rounded-xl border border-slate-300 px-3 py-2 text-sm bg-slate-50" value={timeScale} onChange={(e) => setTimeScale(e.target.value)}>
+                <option value="week">Week view</option>
+                <option value="month">Month view</option>
+                <option value="quarter">Quarter view</option>
+              </select>
+
+              <select className="rounded-xl border border-slate-300 px-3 py-2 text-sm bg-slate-50" value={dependencyFilter} onChange={(e) => setDependencyFilter(e.target.value)}>
+                <option value="all">All dependencies</option>
+                <option value="blocked">Blocked only</option>
+                <option value="blocking">Blocking others only</option>
+                <option value="any">Any blocker link</option>
               </select>
 
               <select className="rounded-xl border border-slate-300 px-3 py-2 text-sm bg-slate-50" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
@@ -605,7 +821,7 @@ export default function PCMDEDashboard() {
           </div>
 
           <div className="overflow-auto rounded-xl border border-slate-200 max-h-[72vh]">
-            <div className="min-w-[1700px]">
+            <div className="min-w-[2200px]">
               <div className="grid bg-slate-100 border-b border-slate-200 sticky top-0 z-30" style={{ gridTemplateColumns: LEFT_GRID }}>
                 <div className="grid text-xs font-bold text-slate-600 sticky left-0 z-40 bg-slate-100 border-r border-slate-200" style={{ gridTemplateColumns: LEFT_COLUMNS }}>
                   <div className="p-3">Task</div>
@@ -618,7 +834,7 @@ export default function PCMDEDashboard() {
                     const isCurrent = m.getMonth() === today.getMonth() && m.getFullYear() === today.getFullYear();
                     return (
                       <div key={m.toISOString()} className={`p-3 text-xs font-bold border-l border-slate-200 ${isCurrent ? "bg-blue-50 text-blue-700" : "text-slate-600"}`}>
-                        {monthLabel(m)}
+                        {timeScale === "week" ? weekLabel(m) : timeScale === "quarter" ? quarterLabel(m) : monthLabel(m)}
                       </div>
                     );
                   })}
@@ -632,13 +848,16 @@ export default function PCMDEDashboard() {
               {flatRows.map((row) => {
                 const hasChildren = row.children?.length > 0;
                 const title = row.title || row.summary || "Untitled";
-                const rowHeight = row.kind === "project" ? "min-h-[50px]" : row.kind === "initiative" ? "min-h-[48px]" : "min-h-[54px]";
+                const rowHeight = row.kind === "project" ? "min-h-[52px]" : row.kind === "initiative" || row.kind === "epic" ? "min-h-[56px]" : row.kind === "subtask" ? "min-h-[46px]" : "min-h-[58px]";
+                const rowBg = row.kind === "subtask" ? "bg-slate-50/80 hover:bg-slate-100" : "hover:bg-slate-50";
                 const jiraLink = row.key?.startsWith("PCMDE-") ? `${JIRA_BASE_URL}${row.key}` : "";
 
                 return (
-                  <div key={row.id || row.key || title} className={`grid border-b border-slate-100 hover:bg-slate-50 ${rowHeight}`} style={{ gridTemplateColumns: LEFT_GRID }}>
-                    <div className="grid text-xs items-center sticky left-0 z-20 bg-white hover:bg-slate-50 border-r border-slate-100" style={{ gridTemplateColumns: LEFT_COLUMNS }}>
-                      <div className="p-2 flex items-center gap-1" style={{ paddingLeft: `${18 + row.depth * 30}px` }}>
+                  <div key={row.id || row.key || title} className={`grid border-b border-slate-100 ${rowBg} ${rowHeight}`} style={{ gridTemplateColumns: LEFT_GRID }}>
+                    <div className={`grid text-xs items-center sticky left-0 z-20 border-r border-slate-100 ${row.kind === "subtask" ? "bg-slate-50/95" : "bg-white"}`} style={{ gridTemplateColumns: LEFT_COLUMNS }}>
+                      <div className="p-2 flex items-center gap-2 relative min-w-0" style={{ paddingLeft: `${row.kind === "subtask" ? 34 + row.depth * 34 : 18 + row.depth * 30}px` }}>
+                        {row.kind === "subtask" && <span className="absolute left-8 top-0 h-full border-l-2 border-slate-200" />}
+
                         {hasChildren ? (
                           <button onClick={() => toggle(row.id)} className="p-1 rounded hover:bg-slate-200 shrink-0">
                             {expanded[row.id] === false ? <ChevronRight size={15} /> : <ChevronDown size={15} />}
@@ -649,24 +868,41 @@ export default function PCMDEDashboard() {
 
                         {nodeIcon(row)}
 
-                        <span className={`${rowTextClass(row)} leading-snug line-clamp-2`}>{title}</span>
-                        <CountPill row={row} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className={`${rowTextClass(row)} ${row.kind === "subtask" ? "text-[11px] italic" : "text-[12px]"} leading-snug break-words`} title={title}>
+                              {title}
+                            </span>
+                            {(row.kind === "project" || row.kind === "initiative" || row.children?.length > 0) && <CountPill row={row} />}
+                          </div>
 
-                        {jiraLink && (
-                          <a href={jiraLink} target="_blank" rel="noreferrer" className="ml-1 inline-flex items-center gap-1 text-blue-500 hover:text-blue-700 shrink-0" title={`Open ${row.key} in Jira`}>
-                            {row.key}
-                            <ExternalLink size={12} />
-                          </a>
-                        )}
-
-                        {!jiraLink && row.key && row.kind !== "project" && (
-                          <span className="ml-1 text-slate-400 shrink-0">{row.key}</span>
-                        )}
+                          <div className="mt-0.5 flex items-center gap-2 text-[10px] text-slate-400">
+                            {jiraLink ? (
+                              <a href={jiraLink} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold text-blue-500 hover:text-blue-700" title={`Open ${row.key} in Jira`}>
+                                {row.key}
+                                <ExternalLink size={11} />
+                              </a>
+                            ) : row.key && row.kind !== "project" ? (
+                              <span className="font-semibold text-slate-400">{row.key}</span>
+                            ) : null}
+                            {row.issueType && row.kind !== "project" && <span>{row.issueType}</span>}
+                          </div>
+                        </div>
                       </div>
 
-                      <div className="p-2 truncate text-slate-600" title={row.assignee || ""}>{row.assignee || "—"}</div>
+                      <div className="p-2 truncate text-slate-600 text-[12px]" title={row.assignee || ""}>{row.assignee || "—"}</div>
 
-                      <div className="p-2">
+                      <div className="p-2 flex items-center gap-1 flex-wrap">
+                        {row.isBlocked && (
+                          <span className="rounded-full bg-red-100 px-2 py-1 text-[10px] font-bold text-red-700 ring-1 ring-red-200" title={`Blocked by: ${(row.blockedBy || []).join(", ")}`}>
+                            🔴 BLOCKED
+                          </span>
+                        )}
+                        {row.isBlocking && (
+                          <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-bold text-amber-700 ring-1 ring-amber-200" title={`Blocks: ${(row.blocking || []).join(", ")}`}>
+                            BLOCKS
+                          </span>
+                        )}
                         {row.status ? (
                           <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ${badgeClass(row.status)}`}>
                             {row.status}
@@ -678,17 +914,23 @@ export default function PCMDEDashboard() {
                     </div>
 
                     <div className="relative grid" style={{ gridTemplateColumns: `repeat(${timeline.months.length}, minmax(120px, 1fr))` }}>
-                      {timeline.months.map((m) => {
-                        const isCurrent = m.getMonth() === today.getMonth() && m.getFullYear() === today.getFullYear();
-                        return <div key={m.toISOString()} className={`border-l ${isCurrent ? "bg-blue-50/40 border-blue-100" : "border-slate-100"}`} />;
-                      })}
+                          {timeline.months.map((m) => {
+                            const isCurrent = m.getMonth() === today.getMonth() && m.getFullYear() === today.getFullYear();
+                            return <div key={m.toISOString()} className={`border-l ${isCurrent ? "bg-blue-50/40 border-blue-100" : "border-slate-100"}`} />;
+                          })}
 
-                      <div
-                        className={`absolute top-1/2 -translate-y-1/2 rounded-full shadow-sm ${barClass(row)}`}
-                        style={barStyle(row)}
-                        title={`${title}: ${formatDate(row.start)} → ${formatDate(row.due)}`}
-                      />
-                    </div>
+                          <div className="absolute top-0 bottom-0 z-20 pointer-events-none" style={todayLineStyle()}>
+                            <div className="relative h-full">
+                              <div className="absolute top-0 bottom-0 left-0 w-[2px] bg-red-500 opacity-80 shadow-sm" />
+                            </div>
+                          </div>
+
+                          <div
+                            className={`absolute top-1/2 -translate-y-1/2 rounded-full shadow-sm ${barClass(row)}`}
+                            style={barStyle(row)}
+                            title={`${title}: ${formatDate(row.start)} → ${formatDate(row.due)}`}
+                          />
+                        </div>
                   </div>
                 );
               })}
