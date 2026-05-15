@@ -725,6 +725,15 @@ export default function PCMDEDashboard() {
     return { left: `${left}%`, width: `${width}%` };
   }
 
+  function todayLineStyle() {
+    const now = new Date();
+    const position = ((now - timeline.start) / 86400000 / totalDays) * 100;
+
+    return {
+      left: `${clamp(position, 0, 100)}%`,
+    };
+  }
+
   const today = new Date();
 
   return (
@@ -905,17 +914,23 @@ export default function PCMDEDashboard() {
                     </div>
 
                     <div className="relative grid" style={{ gridTemplateColumns: `repeat(${timeline.months.length}, minmax(120px, 1fr))` }}>
-                      {timeline.months.map((m) => {
-                        const isCurrent = m.getMonth() === today.getMonth() && m.getFullYear() === today.getFullYear();
-                        return <div key={m.toISOString()} className={`border-l ${isCurrent ? "bg-blue-50/40 border-blue-100" : "border-slate-100"}`} />;
-                      })}
+                          {timeline.months.map((m) => {
+                            const isCurrent = m.getMonth() === today.getMonth() && m.getFullYear() === today.getFullYear();
+                            return <div key={m.toISOString()} className={`border-l ${isCurrent ? "bg-blue-50/40 border-blue-100" : "border-slate-100"}`} />;
+                          })}
 
-                      <div
-                        className={`absolute top-1/2 -translate-y-1/2 rounded-full shadow-sm ${barClass(row)}`}
-                        style={barStyle(row)}
-                        title={`${title}: ${formatDate(row.start)} → ${formatDate(row.due)}`}
-                      />
-                    </div>
+                          <div className="absolute top-0 bottom-0 z-20 pointer-events-none" style={todayLineStyle()}>
+                            <div className="relative h-full">
+                              <div className="absolute top-0 bottom-0 left-0 w-[2px] bg-red-500 opacity-80 shadow-sm" />
+                            </div>
+                          </div>
+
+                          <div
+                            className={`absolute top-1/2 -translate-y-1/2 rounded-full shadow-sm ${barClass(row)}`}
+                            style={barStyle(row)}
+                            title={`${title}: ${formatDate(row.start)} → ${formatDate(row.due)}`}
+                          />
+                        </div>
                   </div>
                 );
               })}
